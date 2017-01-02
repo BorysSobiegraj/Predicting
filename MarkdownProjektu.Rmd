@@ -1,0 +1,292 @@
+---
+title: "IoT prediction"
+author: "Borys Sobiegraj"
+date: "1 Jan 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library("caret")
+library("doParallel")
+library("reshape")
+```
+
+# Executive summary
+
+The presented analysis takes on the question of classifying the manner in which 6 participants performed barbell lifts correctly and incorrectly in 5 different ways. The variable which differentiates the manner in which they performed the exercises is the "classe" variable which besides which we have 159 other variables at our disposal to build the model for prediction.
+
+# Data preperation and exploration
+## Import and dataset slicing
+
+Both datasets that were to be used were downloaded (manually) and imported into the R script:
+
+```{r Data Import, eval = T}
+folder <- "D:\\Users\\bsobiegraj001\\Desktop\\Prediction\\"
+
+testing_set <- read.csv(paste0(folder, "pml-testing.csv"),na.strings = "#DIV/0!")
+training_set <- read.csv(paste0(folder, "pml-training.csv"),na.strings = "#DIV/0!")
+```
+
+As the main goal of the "testing_set" is evaluation of work performed is being a validation set for the overall effort it won?t be used until the very end of the excersise.
+As for the "training_set" it will be divided into two sets: 
+
+1.	Train - for learning of the models and by extension evaluating in sample error
+2.	Test  - for testing models and evaluating out of sample error
+
+```{r Dividing set, eval = T}
+# dividing set for validation - 70% of the sample will be used in to train
+inTraining <- createDataPartition(training_set$classe, times = 1, p = 0.7, list = F)
+Train <- training_set[inTraining,]
+Test <- training_set[-inTraining,]
+```
+
+## Data exploration and adjustments
+Having divided the dataset into training and testing part I am using training for further exploration and adjustments. I start by getting a more in depth understanding of the dataset:
+
+-	Basic checks
+```{r Basic checks, eval = F}
+head(Train)
+names(Train)
+dim(Train)
+```
+-	Advanced checks
+```{r Advanced checks p1, eval = F}
+# deeper look into data
+str(Train)
+summary(Train)
+```
+```{r Advanced checks p2, eval = T}
+## How many columns of each type are there 
+table(sapply(Train, class))
+```
+
+
+Given what we found it is worth dividing further analysis of data into subgroups related to types of variables we have in the dataset. 
+```{r perc class train subsetting, eval = T}
+numeric_columns <- Train[,sapply(Train, class) == "numeric"]
+logical_columns <- Train[,sapply(Train, class) == "logical"]
+integer_columns <- Train[,sapply(Train, class) == "integer"]
+factor_columns <- Train[,sapply(Train, class) == "factor"]
+```
+
+The assumed flow of the analysis will be checking:
+
+1.	summary information concerning the features so we know what we are dealing with
+2.	level of variability 
+3.	percentage of null/NA values per feature
+4.	exploratory charts 
+5.	defining Data frame containing the final variables subset for modeling purposes
+
+## Feature selection
+
+The mention flow was applied with different results to all 4 groups: `r paste0(names(table(sapply(Train, class))), collapse= ", ")`.
+
+### numeric variables
+
+Firstly we want to understand if some of the metrics by their definition (like being metadata which should not be used) are to be excluded:
+
+```{r numeric coll summary, eval = F}
+summary(numeric_columns)
+```
+
+
+Given the `r dim(numeric_columns)[2]` coumns we start by checking the variance in the data set:
+```{r checking variance numeric, eval = T}
+NumericNZV <- nearZeroVar(numeric_columns, saveMetrics = TRUE) 
+NumericNZV_TRUE <- rownames(NumericNZV[NumericNZV$nzv==TRUE,])
+```
+
+
+Having reviewed the results I subseted the dataset:
+```{r subsetting on variance numeric, eval = T}
+NumericNZV_Final <- numeric_columns[, - which(names(numeric_columns) %in% NumericNZV_TRUE)]
+```
+
+Next I checked the amount of null values per feautes and given the maximum 20% NA's threshold I subseted the dataset:
+```{r NA subsetting numeric, eval = T}
+Numeric_NA_freq <- apply(is.na(NumericNZV_Final), 2, sum)/ dim(NumericNZV_Final)[1]
+Numeric_NotEmptyFeatures <- names(Numeric_NA_freq[Numeric_NA_freq < 0.2])
+Numeric_NotNA <- NumericNZV_Final[,Numeric_NotEmptyFeatures]
+```
+
+Having subseted the data I am looking into the `r dim(Numeric_NotNA)[2]`
+```{r data exploration numeric, eval = T}
+DataForPloting <- cbind(NumericNZV_Final,Train$classe)
+names(DataForPloting) <- c(names(DataForPloting)[1:length(names(DataForPloting))-1],"classe")
+
+VarNum <- 3
+g<-ggplot(DataForPloting, aes(x=DataForPloting[,VarNum])) 
+g<-g+ geom_density(aes(group=classe, colour=classe))
+g<-g+ xlab(names(DataForPloting)[VarNum])
+g
+```
+
+Not given reasons for further exclusions I decide to define the finas subset of numeric features dataset as:
+```{r defininf subset of numeric, eval = T}
+NumericFinal <- Numeric_NotNA
+```
+
+
+### other variables
+
+As the process was layed out obove I will provide only the mininimum interesitng facts concerning other variables:
+
+- intigers:
+
+First four columns are related to datasets metadata and as such souch shouldn't be treated as of value for the model
+```{r data exploration int, eval = T}
+summary(integer_columns)[,1:4]
+```
+
+Using those metrics would signifivantly distort the results as becouse of how the experiment was organized those metadata features were strongly corelated with the manner in which the excercsies were performed:
+
+```{r charts int, echo = F ,eval = T, fig.height=2}
+
+intigercNZV <- nearZeroVar(integer_columns, saveMetrics = TRUE) 
+intigercNZV_TRUE <- rownames(intigercNZV[intigercNZV$nzv==TRUE,])
+
+IntigerNZV_Final <- integer_columns
+
+Intiger_NA_freq <- apply(is.na(IntigerNZV_Final), 2, sum)/ dim(IntigerNZV_Final)[1]
+Intiger_NotEmptyFeatures <- names(Intiger_NA_freq[Intiger_NA_freq < 0.2])
+Intiger_NotNA <- IntigerNZV_Final[,Intiger_NotEmptyFeatures]
+
+
+DataForPloting <- cbind(integer_columns,Train$classe)
+names(DataForPloting) <- c(names(DataForPloting)[1:length(names(DataForPloting))-1],"classe")
+
+VarNum <- 1
+g<-ggplot(DataForPloting, aes(x=DataForPloting[,VarNum])) 
+g<-g+ geom_density(aes(group=classe, colour=classe))
+g<-g+ xlab(names(DataForPloting)[VarNum])
+g
+
+VarNum <- 4
+h<-ggplot(DataForPloting, aes(x=DataForPloting[,VarNum])) 
+h<-h+ geom_density(aes(group=classe, colour=classe))
+h<-h+ xlab(names(DataForPloting)[VarNum])
+h
+
+intigerFinal <- Intiger_NotNA[,-c(1:4)]
+
+```
+
+- logical:
+
+As all logical are features full of NA's there is not point in using those
+```{r analysis logical, echo = F ,eval = T, fig.height=2}
+summary(logical_columns)
+```
+
+- factors:
+
+In factor vaiables we find 2 metada data features and the modeled variable:
+```{r analysis factors, echo = F ,eval = T}
+summary(factor_columns[,c(1,2,dim(factor_columns)[2])])
+```
+
+all thre of them are to be exluded. As for the rest of the variables we find they were assigned factor status due to small amount of levels. Also they are all numeric with significant amount of NAs which is an unwanted aspect excluding the whole factor set from the analysis.
+
+## Modeling
+
+We start from building the modling data set:
+
+```{r building modeling dataset, echo = F ,eval = T}
+DataForModeling <- cbind(intigerFinal,NumericFinal, Train$classe)
+names(DataForModeling) <- c(names(DataForModeling)[1:(length(names(DataForModeling))-1)],"classe")
+```
+
+to make improvements on the models' training time am deploying multi core calculation:
+```{r multicore, echo = F ,eval = T}
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+```
+
+and deploing on it preselcted models:
+
+1. rpart - tree model
+```{r rpart, echo = T ,eval = T, cache= T, message= F}
+model_rpart <- train(data = DataForModeling, classe ~ . , method = "rpart")
+```
+2. rf - random forest
+```{r rf, echo = T ,eval = T, cache= T, message= F}
+model_randomForest <- train(data = DataForModeling, classe ~ . , method = "rf", prox = TRUE)
+```
+3. treebag - bagging for trees
+```{r treebag, echo = T ,eval = T, cache= T, message= F}
+model_treebag <- train(data = DataForModeling, classe ~ . , method = "treebag")
+```
+4. lda - linear discriminatory analysis
+```{r lda, echo = T ,eval = T, cache= T, message= F}
+model_LDA <- train(data = DataForModeling, classe ~ . , method = "lda")
+```
+5. nb - naive bayes
+```{r nb, echo = T ,eval = T, cache= T, message= F}
+model_naivebaise <- train(data = DataForModeling, classe ~ . , method = "nb")
+```
+6. gbm - boosted trees
+```{r gbm, echo = T ,eval = T, cache= T, message= F}
+model_BoostingTrees <- train(data = DataForModeling, classe ~ . , method = "gbm", verbose = FALSE)
+```
+
+In all models for training purposes I left the standard (bootstrap) cross validation for calibrating models.
+
+We can review the fits of trained models to see which of the models performed best on the test set. 
+
+```{r basic models comparison, echo = F ,eval = T, cache= T}
+rpart <- model_rpart$results[,c("Accuracy","Kappa")][1,]
+randomForest <- model_randomForest$results[,c("Accuracy","Kappa")][1,]
+treebag <- model_treebag$results[,c("Accuracy","Kappa")][1,]
+LDA <- model_LDA$results[,c("Accuracy","Kappa")][1,]
+NaiveBayse <- model_naivebaise$results[,c("Accuracy","Kappa")][1,]
+BoostedTrees <- model_BoostingTrees$results[,c("Accuracy","Kappa")][1,]
+
+ModelErrorsEst_InSample  <- rbind(rpart,randomForest,treebag,LDA,NaiveBayse,BoostedTrees)
+ModelErrorsEst_InSample$ModelName <- c("rpart","randomForest","treebag","LDA","NaiveBayse","BoostedTrees")
+ModelErrorsEst_InSample
+```
+
+Given the Accuracy We find the the best fitted models are random forest and the bagged trees. This of course is just the measure of the in sample error and the supposed value of error should increase in the training set.
+
+Now we crossvalidate our models with the Testing sample we left aside which will also provide estimate of out of sample error:
+
+```{r out of sample error p1, echo = F ,eval = T, cache= T}
+CM_treebag <- confusionMatrix(predict(model_treebag,Test),Test$classe)
+CM_randomForest <- confusionMatrix(predict(model_randomForest,Test),Test$classe)
+
+ModelErrorsEst_OutOfSample <- as.data.frame(rbind(CM_randomForest$overall[1:2],CM_treebag$overall[1:2]))
+ModelErrorsEst_OutOfSample$ModelName <- c("randomForest","treebag")
+ModelErrorsEst_OutOfSample
+```
+
+To take a deeper look into how good were the preditions we can see how many and wat kind of wrong predictions happend in the dataset:
+
+```{r out of sample error p2, echo = F ,eval = T, cache= T}
+Dataset_CM_randomForest <- data.frame(melt(CM_randomForest$table))
+ggplot(data = Dataset_CM_randomForest , aes(Prediction, Reference, fill = value) ) + geom_tile() + scale_fill_gradient2(low = "yellow",  high = "blue") + geom_text(aes(label=value))
+```
+
+
+# Conclusions
+
+There were two models that were significantly better than others:
+
+1. random forest
+2. bagging for trees
+
+Out of which by a slim margin random forest provided better predictions on both training and test datasets minimizing errors (both in and out of sample).
+
+
+# Citation
+
+The data set used was made available bythe courtosy of:
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+Read more: <http://groupware.les.inf.puc-rio.br/har#wle_paper_section#ixzz4UR9VIZ1I>
+
+
+
+
